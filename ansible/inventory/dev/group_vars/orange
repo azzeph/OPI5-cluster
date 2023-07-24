@@ -1,0 +1,5 @@
+repository: "https://mirror.yandex.ru"
+os: "debian"
+become: true
+k8s_version: 1.27.3-00
+podSubnet: 10.244.0.0/16

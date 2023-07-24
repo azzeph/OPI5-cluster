@@ -1,0 +1,183 @@
+---
+- hosts: orange
+  gather_facts: yes
+  become: yes
+  pre_tasks:
+    - name: set hostname 
+      ansible.builtin.hostname:
+        name: "{{ ansible_hostname }}"
+    #- name: Disable swap
+    #  ansible.builtin.systemd:
+    #    state: stopped
+    #    enabled: false
+    #    name:  orangepi-zram-config.service
+    #- name: Permanetly disable sap
+    #  ansible.builtin.shell: | 
+    #    swapoff -a
+  tasks:
+    - ansible.posix.sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        sysctl_set: true
+        state: present
+        reload: true
+      tags: forwarding
+    - name: Add the br_netfilter module
+      community.general.modprobe:
+       name: br_netfilter
+       state: present
+      tags: forwarding
+
+    - name: Add a line to a file if the file does not exist, without passing regexp
+      ansible.builtin.lineinfile:
+        path: /etc/modprobe.d/br_netfilter
+        line: br_netfilter
+        create: yes
+      tags: forwarding
+
+    - ansible.posix.sysctl:
+        name: net.bridge.bridge-nf-call-iptables
+        value: '1'
+        sysctl_set: true
+        state: present
+        reload: true
+      tags: forwarding
+
+    - name: Add the ipvs module
+      community.general.modprobe:
+       name: "{{ item }}"
+       state: present
+      with_items:
+        - ip_vs
+        - ip_vs_rr
+        - ip_vs_wrr
+        - ip_vs_sh
+      tags: forwarding
+
+    - name: Remove exist repositoryes
+      ansible.builtin.file:
+        path: /etc/apt/sources.list.d/
+        state: absent
+        recurse: no
+
+    - name: Remove exist repositoryes
+      ansible.builtin.file:
+        path: /etc/apt/sources.list
+        state: absent
+
+    - name: Add system repository
+      ansible.builtin.apt_repository:
+        repo: "deb {{ repository }}/{{ os }} bookworm main contrib non-free non-free-firmware"
+        state: present
+    - name: Add system repository1
+      ansible.builtin.apt_repository:
+        repo: "deb {{ repository }}/{{ os }} bookworm-updates main contrib non-free non-free-firmware"
+        state: present
+    - name: Add system repository2
+      ansible.builtin.apt_repository:
+        repo: "deb {{ repository }}/{{ os }} bookworm-backports main contrib non-free non-free-firmware"
+        state: present
+    - name: Create a directory if it does not exist
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        recurse: true
+        state: directory
+            
+    - name: add docker repository key
+      ansible.builtin.shell: | 
+         curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --yes --dearmor -o /etc/apt/keyrings/docker.gpg
+
+         exit 0
+ 
+    - name: Add docker repository
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable"
+        state: present
+
+    - name: add k8s repository key
+      ansible.builtin.shell: | 
+        curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg  |  gpg --yes --dearmor -o /etc/apt/keyrings/kubernetes-archive-keyring.gpg
+
+        exit 0
+
+    - name: Add docker repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main  "
+        state: present
+    - name: Upgrade system
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: false
+    - name: Install  ipvs
+      ansible.builtin.apt:
+        name: "{{ item }}"
+        state: present
+        update_cache: yes
+      with_items:
+        - ipset 
+        - ipvsadm
+
+    - name: Remove builtin docker packages
+      ansible.builtin.apt:
+        name: "{{ item }}"
+        state: absent
+      with_items:
+        - docker.io 
+        - docker-doc 
+        - docker-compose 
+        - podman-docker 
+        - containerd runc
+        - kubectl
+        - kubeadm
+        - kubelet
+
+    - name: Install  docker from oficcial repository
+      ansible.builtin.apt:
+        name: "{{ item }}"
+        state: present
+        update_cache: yes
+      with_items:
+        - docker-ce 
+        - docker-ce-cli 
+        - containerd.io 
+        - docker-buildx-plugin 
+        - docker-compose-plugin
+
+    - name: Generate default config for containerd.io
+      ansible.builtin.shell: | 
+        containerd config default > /etc/containerd/config.toml
+
+        exit 0
+    - name: Replace old hostname with new hostname (requires Ansible >= 2.4)
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+   
+    - name: Restart containerd
+      ansible.builtin.systemd:
+        state: restarted
+        name: containerd
+
+    - name: Install  k8s from oficcial repository
+      ansible.builtin.apt:
+        name: "{{ item }}"
+        state: present
+        update_cache: yes
+      with_items:
+        - "kubelet={{ k8s_version }}"
+        - "kubeadm={{ k8s_version }}"
+        - "kubectl={{ k8s_version }}"
+    
+    - name: Remove useless packages from the cache
+      ansible.builtin.apt:
+        autoclean: yes
+    - name: Remove dependencies that are no longer required
+      ansible.builtin.apt:
+        autoremove: yes
+
+    - name: Make kubeadm config
+      ansible.builtin.template:
+        src: kubeadm.yaml.j2
+        dest: /root/kubeadm.yaml
+      tags: templates
